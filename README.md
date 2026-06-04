@@ -159,12 +159,12 @@ If you use this code or methodology, please cite:
 
 ```bibtex
 @software{richiardi_wetland_2025,
-  author    = {Richiardi, Chiara and Awe-Peter, Helen and Steinbach, Stefanie},
+  author    = {Richiardi, Chiara and Adamo, Maria and Steinbach, Stefanie and Awe-Peter, Helen},
   title     = {Annual Wetland Land Cover Classification from Landsat Time Series:
                Ibaji Floodplain, Nigeria (1985–2024)},
-  year      = {2025},
+  year      = {2026},
   publisher = {GitHub},
-  url       = {https://github.com/chiararichiardi/wetland-ibaji-nigeria},
+  url       = {https://github.com/chiararik/WorldCover_timeSeries_mapping},
   note      = {UNOOSA Space4Water Programme — Challenge 64}
 }
 ```
