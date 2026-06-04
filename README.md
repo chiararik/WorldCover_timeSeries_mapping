@@ -26,7 +26,7 @@ This repository provides a fully automated, cloud-based pipeline for annual wetl
 | Grassland / Cropland | WC30 + WC40 | Smallholder agriculture and pasture |
 | Non-vegetated / Bare | WC50 + WC60 | Bare ground and built-up |
 
-### Key results (Ibaji LGA, 2,281.8 km², 1985–2024)
+### Key results (case study Ibaji LGA, 2,281.8 km², 1985–2024)
 - **Permanent water bodies: −20.1%** (R² = 0.85, p < 10⁻¹³) — the strongest and most robust signal
 - **Grassland/Cropland: +8.5%** (p = 0.016) — significant agricultural expansion
 - **Herbaceous wetland: +60.4%** (p = 0.21, n.s.) — non-linear increase concentrated 1985–1999
