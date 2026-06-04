@@ -1,0 +1,75 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: >-
+  Annual Wetland Land Cover Classification from Landsat Time Series:
+  Ibaji Floodplain, Nigeria (1985-2024)
+abstract: >-
+  A self-supervised Random Forest classification pipeline for annual wetland
+  land cover mapping using Landsat imagery (1985-2024) in Google Earth Engine,
+  with a four-module R post-processing pipeline for probability calibration,
+  quality assessment, change analysis, and variable importance analysis.
+  Developed for the Ibaji floodplain, Kogi State, Nigeria, within the UNOOSA
+  Space4Water programme (Challenge 64: Disappearing Wetlands in North Central
+  Nigeria).
+authors:
+  - family-names: Richiardi
+    given-names: Chiara
+    affiliation: >-
+      ENEA, Laboratory Biodiversity and Ecosystems,
+      Division of Anthropic and Climate Change Impacts, Italy
+    email: chiara.richiardi@enea.it
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+  - family-names: Awe-Peter
+    given-names: Helen
+    affiliation: >-
+      National Space Research and Development Agency (NASRDA),
+      Strategic Space Applications Department, Abuja, Nigeria
+  - family-names: Steinbach
+    given-names: Stefanie
+    affiliation: "Ruhr University Bochum, Institute of Geography, Germany"
+  - family-names: Markova
+    given-names: Lucie
+    affiliation: "Czech Hydrometeorological Institute, Czech Republic"
+  - family-names: Isundwa
+    given-names: Felix
+version: "1.0.0"
+date-released: "2025-06-01"
+license: MIT
+repository-code: "https://github.com/chiararichiardi/wetland-ibaji-nigeria"
+keywords:
+  - wetland mapping
+  - land cover change
+  - Landsat time series
+  - Google Earth Engine
+  - Random Forest
+  - remote sensing
+  - Nigeria
+  - Ibaji
+  - floodplain
+  - Space4Water
+  - biodiversity
+  - SDG 6
+  - SDG 15
+notes: >-
+  UNOOSA Space4Water Programme, Challenge 64. The GEE JavaScript pipeline and
+  R post-processing modules were co-developed with AI assistance using Claude
+  (Anthropic, 2025). All outputs were reviewed and validated by the authors.
+references:
+  - type: standard
+    title: "ESA WorldCover 10 m 2020 v100"
+    authors:
+      - name: "European Space Agency"
+    year: 2021
+    doi: "10.5281/zenodo.5571936"
+  - type: article
+    title: "Random Forests"
+    authors:
+      - family-names: Breiman
+        given-names: Leo
+    journal: "Machine Learning"
+    volume: 45
+    start: 5
+    end: 32
+    year: 2001
+    doi: "10.1023/A:1010933404324"
