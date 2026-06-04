@@ -19,7 +19,7 @@ authors:
       ENEA, Laboratory Biodiversity and Ecosystems,
       Division of Anthropic and Climate Change Impacts, Italy
     email: chiara.richiardi@enea.it
-    orcid: "https://orcid.org/0000-0000-0000-0000"
+    orcid: "https://orcid.org/0000-0002-2370-7768"
   - family-names: Awe-Peter
     given-names: Helen
     affiliation: >-
@@ -28,15 +28,14 @@ authors:
   - family-names: Steinbach
     given-names: Stefanie
     affiliation: "Ruhr University Bochum, Institute of Geography, Germany"
-  - family-names: Markova
-    given-names: Lucie
-    affiliation: "Czech Hydrometeorological Institute, Czech Republic"
-  - family-names: Isundwa
-    given-names: Felix
+  - family-names: Adamo
+    given-names: Maria
+    affiliation: National Research Council
+    orcid: "https://orcid.org/0000-0003-3030-4884"
 version: "1.0.0"
 date-released: "2025-06-01"
 license: MIT
-repository-code: "https://github.com/chiararichiardi/wetland-ibaji-nigeria"
+repository-code: "https://github.com/chiararik/WorldCover_timeSeries_mapping"
 keywords:
   - wetland mapping
   - land cover change
@@ -44,8 +43,6 @@ keywords:
   - Google Earth Engine
   - Random Forest
   - remote sensing
-  - Nigeria
-  - Ibaji
   - floodplain
   - Space4Water
   - biodiversity
