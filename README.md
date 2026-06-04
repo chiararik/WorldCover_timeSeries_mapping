@@ -58,11 +58,7 @@ wetland-ibaji-nigeria/
 │   └── 04_vip_analysis.R   ← Module 4: variable importance over time
 │
 ├── docs/
-│   ├── ATBD_v3.0.md        ← Algorithm Theoretical Basis Document (summary)
-│   └── formulas/           ← publication-quality formula PNG images (300 DPI)
-│       ├── F01_composite.png
-│       ├── F09_shannon_entropy.png
-│       └── ... (16 total)
+│   └── ATBD_v3.0.md        ← Algorithm Theoretical Basis Document (summary)
 │
 └── data/
     └── README.md           ← data description and download instructions
