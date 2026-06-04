@@ -12,7 +12,7 @@ INPUT: Landsat 4/5/7/8/9 + Sentinel-1 (post-2014) + WorldCover 2020 labels
                     │
                     ▼
         ┌───────────────────────────┐
-        │  GEE PIPELINE (per year) │
+        │  GEE PIPELINE (per year)  │
         │  1. Cloud masking         │
         │  2. Per-scene indices     │
         │  3. Dry-season median     │
@@ -24,7 +24,7 @@ INPUT: Landsat 4/5/7/8/9 + Sentinel-1 (post-2014) + WorldCover 2020 labels
                     │ Google Drive exports
                     ▼
         ┌───────────────────────────┐
-        │  R PIPELINE (all years)  │
+        │  R PIPELINE (all years)   │
         │  M1: Isotonic calibration │
         │  M2: Quality Index        │
         │  M3: Change analysis      │
