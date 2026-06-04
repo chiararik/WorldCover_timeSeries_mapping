@@ -1,4 +1,4 @@
-# wetland-ibaji-nigeria
+# Annual Wetland Land Cover Classification from Landsat Time Series
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GEE](https://img.shields.io/badge/Google%20Earth%20Engine-JS%20API-4CAF50)](gee/wetland_classification.js)
