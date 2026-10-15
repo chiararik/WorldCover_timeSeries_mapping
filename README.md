@@ -3,7 +3,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GEE](https://img.shields.io/badge/Google%20Earth%20Engine-JS%20API-4CAF50)](gee/wetland_classification.js)
 [![R](https://img.shields.io/badge/R-%E2%89%A54.1-276DC3)](R/)
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.XXXXXXX-orange)](https://doi.org/10.5281/zenodo.XXXXXXX)
 
 **Annual Wetland Land Cover Classification from Landsat Time Series  
 Ibaji Floodplain, Kogi State, Nigeria — 1985–2024**
