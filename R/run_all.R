@@ -70,4 +70,8 @@ run <- function(modules = 1:4) {
   invisible(results)
 }
 
-if (!interactive()) run(1:4)
+setwd("code-repository-local-path-here")
+
+if (interactive()) run(1:4)
+
+run(1:4)

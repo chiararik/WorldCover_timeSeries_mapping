@@ -101,9 +101,10 @@ save_plot(p1, file.path(OUT_VIP, "vip_heatmap.png"), 14, 8)
 # Plot 2: Top-N feature time series
 top_feats <- head(feats_keep, TOP_N_FEATURES)
 grp_col_map <- setNames(unlist(GROUP_COLOURS), names(GROUP_COLOURS))
+# v2.4: vip_all already carries `group` (joined above). Joining vip_sum$group again
+# created group.x / group.y and aes(colour = group) failed ("oggetto 'group' non trovato").
 vip_ts <- vip_all |>
   dplyr::filter(feature %in% top_feats) |>
-  dplyr::left_join(dplyr::select(vip_sum, feature, group), by = "feature") |>
   dplyr::mutate(feature = factor(feature, levels = top_feats))
 
 p2 <- ggplot2::ggplot(vip_ts, ggplot2::aes(x = year, y = importance_norm,

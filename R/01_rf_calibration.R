@@ -52,6 +52,17 @@ pts <- pts_raw |>
                 dplyr::across(dplyr::all_of(prob_cols), as.numeric)) |>
   dplyr::filter(!is.na(correct), !is.na(longitude))
 
+# v2.4: single point of truth for the probability scale. validation_points_YEAR.csv
+# carries prob_* in [0,1], whereas multiprob_YEAR.tif is Byte 0-100. Previously the
+# entropy (H_raw) and the raw side of the reliability diagram divided the CSV values
+# by 100 AGAIN, collapsing every raw probability into the first bin (raw entropy
+# ~0.03, one raw point per panel). Everything below now works on [0,1]; if a future
+# export is in 0-100 it is rescaled here once.
+if (max(unlist(pts[prob_cols]), na.rm = TRUE) > 1.5) {
+  pts[prob_cols] <- pts[prob_cols] / 100
+  message(.ts(), "  prob_* columns were on a 0-100 scale: rescaled to [0,1]")
+}
+
 message(.ts(), sprintf("  %d validation points | %d classes | OA = %.1f%%",
                         nrow(pts), n_classes, mean(pts$correct) * 100))
 
@@ -99,7 +110,7 @@ for (cn in class_names)
 
 eps   <- 1e-10
 pts$H_raw <- apply(pts[, prob_cols], 1,
-  function(p) { p <- pmax(p/100, eps); -sum(p * log(p)) / log(n_classes) })
+  function(p) { p <- pmax(p, eps); -sum(p * log(p)) / log(n_classes) })
 pts$H_cal <- apply(pts[, pcal_cols], 1,
   function(p) { p <- pmax(p, eps);    -sum(p * log(p)) / log(n_classes) })
 message(.ts(), sprintf("  Entropy: raw [%.3f, %.3f]  cal [%.3f, %.3f]",
@@ -123,14 +134,20 @@ if (!file.exists(mp_path)) {
   row_sums[row_sums == 0] <- 1
   cal_stk <- cal_stk / row_sums
 
+  # v2.4: GEE exports masked (NoData) pixels with all class probabilities = 0.
+  # They must stay NA, otherwise they get calibrated confidence 0 and entropy 0
+  # (i.e. "certainly uncertain" and "perfectly certain" at the same time).
+  valid_mp <- sum(mp_stk, na.rm = TRUE) > 0
+
   # Calibrated confidence = max calibrated class probability
-  conf_cal <- max(cal_stk)
+  conf_cal <- terra::ifel(valid_mp, max(cal_stk), NA)
   terra::writeRaster(conf_cal,
     file.path(OUT_CALIBRATION, sprintf("calibrated_confidence_%d.tif", yr)),
     datatype = "FLT4S", overwrite = TRUE)
 
   # Calibrated uncertainty = normalised Shannon entropy
   unc_cal <- -sum(ifel(cal_stk > eps, cal_stk * log(cal_stk), 0)) / log(n_classes)
+  unc_cal <- terra::ifel(valid_mp, unc_cal, NA)   # v2.4: NoData stays NA
   terra::writeRaster(unc_cal,
     file.path(OUT_CALIBRATION, sprintf("calibrated_uncertainty_%d.tif", yr)),
     datatype = "FLT4S", overwrite = TRUE)
@@ -141,7 +158,7 @@ if (!file.exists(mp_path)) {
 # ── Calibration plot ──────────────────────────────────────────────────────────
 n_bins <- 10
 rl_list <- lapply(class_names, function(cn) {
-  p   <- pts[[paste0("prob_", cn)]] / 100
+  p   <- pts[[paste0("prob_", cn)]]
   y   <- as.integer(norm_name(pts$class_name_actual) == norm_name(cn))
   pc  <- pts[[paste0("pcal_", cn)]]
   cuts <- cut(p, breaks = seq(0, 1, 1/n_bins), include.lowest = TRUE)

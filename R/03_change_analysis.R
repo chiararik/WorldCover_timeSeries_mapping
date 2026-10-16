@@ -1,5 +1,27 @@
 # =============================================================================
-#  R/03_change_analysis.R — MODULE 3: LAND COVER CHANGE ANALYSIS  v2.3
+#  R/03_change_analysis.R — MODULE 3: LAND COVER CHANGE ANALYSIS  v2.4
+#
+#  FIXES IN v2.4 (on top of v2.3):
+#  NoData leak in Stream A. GEE exports masked pixels (outside the AOI polygon,
+#  or never observed) as class 0. In the smoothing step every class weight of
+#  such a pixel is 0, and terra::which.max() on an all-zero stack returns layer 1
+#  = the lowest class code (10, Tree cover). Pixels with NoData in ALL years of
+#  the window were therefore silently labelled Tree cover in every year,
+#  inflating that class (and the AOI total) by a constant amount, and
+#  contaminating area_by_class_year, trend_by_class, the transition matrix and
+#  stable_mask. Fixed by:
+#   (a) a validity mask: a pixel is valid in year t only if at least one year of
+#       the smoothing window has class > 0; otherwise the smoothed value is NA
+#       (terra::freq(), table() and the plots already ignore NA);
+#   (b) a tiny positive weight (1e-6) for every valid observation, so that a
+#       valid pixel whose confidence is exactly 0 is never resolved by the
+#       all-zero tie rule;
+#   (c) class 0 removed from all_cls.
+#  Pixels that are NoData in some, but not all, window years are still gap-filled
+#  from the neighbouring years (unchanged behaviour).
+#  Also new in v2.4: years with valid-pixel coverage < MIN_COVERAGE (config.R,
+#  from Module 2) are excluded altogether (no smoothing, baseline, trend,
+#  transition or Stream B pair).
 #
 #  FIXES IN v2.3 (on top of v2.2):
 #  1. pix_km2 unit bug: GEE exports EPSG:4326, terra::res() returns degrees.
@@ -50,7 +72,7 @@ if (!exists("OUTPUT_ROOT")) source("config.R")
 source("R/00_utils.R")
 .check_packages(c("terra","dplyr","tidyr","ggplot2","scales","stringr","RColorBrewer"))
 
-section("Module 3 — Land Cover Change Analysis (v2.3)")
+section("Module 3 — Land Cover Change Analysis (v2.4)")
 
 lc_f  <- find_files(GEE_DIR, "^land_cover_\\d{4}\\.tif$")
 cf_f  <- find_files(GEE_DIR, "^confidence_\\d{4}\\.tif$")
@@ -79,6 +101,31 @@ qi_df <- if (file.exists(qi_path)) {
   data.frame(year = years, quality_index = NA_real_, low_quality = FALSE)
 }
 
+# v2.4: drop years whose valid-pixel coverage is below MIN_COVERAGE (config.R).
+# They are removed BEFORE smoothing, so they are not baseline/end point, do not
+# enter the trend, and do not feed the smoothing windows of their neighbours.
+# Years with no quality-index row (coverage unknown) are kept, with a warning.
+if (MIN_COVERAGE > 0 && "coverage" %in% names(qi_df)) {
+  cov_y   <- qi_df$coverage[match(years, qi_df$year)]
+  unknown <- years[is.na(cov_y)]
+  if (length(unknown) > 0)
+    message(.ts(), "  WARNING: no coverage for year(s) ", paste(unknown, collapse = ", "),
+            " (no accuracy CSV?) — kept, QI weight defaults to 1")
+  drop <- !is.na(cov_y) & cov_y < MIN_COVERAGE
+  if (any(drop)) {
+    message(.ts(), sprintf("  EXCLUDED %d year(s) with coverage < %.0f%%: %s",
+      sum(drop), MIN_COVERAGE * 100,
+      paste(sprintf("%d (%.1f%%)", years[drop], cov_y[drop] * 100), collapse = ", ")))
+    lc_f$files <- lc_f$files[!drop]; cf_f$files <- cf_f$files[!drop]
+    cal_files  <- cal_files[!drop];  years <- years[!drop]; n_yr <- length(years)
+    qi_df <- qi_df[qi_df$year %in% years, ]   # keeps excluded years out of plot bands
+    message(.ts(), sprintf("  Analysed years: %d (%d–%d)", n_yr, min(years), max(years)))
+  }
+} else if (MIN_COVERAGE > 0) {
+  message(.ts(), "  WARNING: no coverage column in quality_index.csv — ",
+          "MIN_COVERAGE filter skipped (re-run Module 2 v2.4)")
+}
+
 ref <- terra::rast(lc_f$files[1])
 
 # FIX v2.3: pix_km2 — geographic (degrees) vs projected (metres) CRS detection.
@@ -103,6 +150,7 @@ best_cf <- terra::rast(lapply(seq_along(years), function(i) {
 }))
 names(best_cf) <- paste0("bcf_", years)
 all_cls <- sort(unique(lookup$class_code))
+all_cls <- all_cls[all_cls > 0]   # v2.4: class 0 is the GEE NoData code, not a class
 
 # =============================================================================
 # STREAM A: Confidence-weighted temporal smoothing
@@ -112,10 +160,14 @@ sm_list <- vector("list", n_yr)
 for (i in seq_along(years)) {
   yr  <- years[i]
   win <- seq(max(1, i - SMOOTH_HALF_WINDOW), min(n_yr, i + SMOOTH_HALF_WINDOW))
+  # v2.4: +1e-6 keeps every valid observation strictly positive (see header)
   wt_stk <- terra::rast(lapply(all_cls, function(cls)
     Reduce("+", lapply(win, function(s)
-      terra::ifel(lc_stk[[s]] == cls, best_cf[[s]] / 100, 0)))))
+      terra::ifel(lc_stk[[s]] == cls, best_cf[[s]] / 100 + 1e-6, 0)))))
   sm_cls <- terra::classify(terra::which.max(wt_stk), cbind(seq_along(all_cls), all_cls))
+  # v2.4: NoData in every year of the window -> NA (never a class)
+  valid_win <- Reduce("|", lapply(win, function(s) lc_stk[[s]] > 0))
+  sm_cls <- terra::ifel(valid_win, sm_cls, NA)
   names(sm_cls) <- paste0("sm_", yr)
   sm_list[[i]]  <- sm_cls
   terra::writeRaster(sm_cls, file.path(OUT_CHANGE, sprintf("smoothed_%d.tif", yr)),
@@ -125,6 +177,13 @@ for (i in seq_along(years)) {
     ifelse(!is.na(cal_files[i]), "calibrated", "raw conf")))
 }
 sm_stk <- terra::rast(sm_list); names(sm_stk) <- paste0("sm_", years)
+
+# v2.4 sanity log: AOI actually mapped (pixels that are NA in every smoothed year
+# are outside the AOI / never observed and are excluded from ALL statistics below).
+n_never <- sum(as.vector(terra::values(sum(!is.na(sm_stk)) == 0)), na.rm = TRUE)
+message(.ts(), sprintf("  Pixels never mapped (excluded): %d (%.1f km²) | mapped AOI: %.1f km²",
+                        n_never, n_never * pix_km2,
+                        (terra::ncell(ref) - n_never) * pix_km2))
 
 # Area statistics (terra::freq excludes NAs by default)
 area_df <- dplyr::bind_rows(lapply(seq_along(years), function(i) {
@@ -205,7 +264,10 @@ p3 <- ggplot2::ggplot(
     ggplot2::aes(x = slope_km2_yr, y = class_name, colour = significant,
                  xmin = slope_ci_lo, xmax = slope_ci_hi)) +
   ggplot2::geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
-  ggplot2::geom_errorbarh(height = 0.35, linewidth = 0.8) + ggplot2::geom_point(size = 4) +
+  # v2.4: geom_errorbarh() is deprecated (ggplot2 >= 4.0) and warned "height was
+  # translated to width"; geom_errorbar(orientation = "y") is the supported form.
+  ggplot2::geom_errorbar(orientation = "y", width = 0.35, linewidth = 0.8) +
+  ggplot2::geom_point(size = 4) +
   ggplot2::scale_colour_manual(values = c("TRUE" = "#C00000", "FALSE" = "#595959"),
     labels = c("TRUE" = "p<0.05 (*)", "FALSE" = "n.s."), name = "") +
   ggplot2::labs(title = "Linear trend \u2014 QI-weighted OLS",

@@ -10,10 +10,22 @@
 #  QI in [0,1]. Years with QI < QI_LOW_THRESHOLD flagged as low-quality
 #  and shown as grey bands in Module 3 plots and down-weighted in OLS.
 #
-#  KNOWN LIMITATION:
-#  coverage is always 1.0 because GEE encodes NoData as class=0, not NA.
-#  The QI is therefore driven mainly by BA and S1_bonus. Future fix:
-#  use n_scenes_per_season from GEE metadata instead of fraction non-NA.
+#  v2.4 FIX (NoData handling):
+#  GEE encodes NoData as class=0, not NA, so the previous
+#  mean(!is.na(land_cover)) was always 1.0 and the "coverage" component carried
+#  no information; mean_confidence was also averaged over NoData pixels
+#  (confidence 0), double-penalising sparse years (e.g. 1984: ~75% NoData).
+#  Now:
+#   - the AOI = pixels with class > 0 in at least one year (excludes pixels that
+#     lie outside the AOI polygon and are NoData in every year);
+#   - coverage = fraction of the AOI with class > 0 in that year;
+#   - mean_confidence = mean confidence over valid (class > 0) pixels only.
+#  Years with coverage < MIN_COVERAGE (config.R) are flagged `excluded` in
+#  quality_index.csv and dropped by Module 3. coverage enters the QI as an
+#  absolute fraction (not min-max), and the min-max ranges of confidence and
+#  balanced accuracy use the non-excluded years only.
+#  WARNING: QI values (and therefore the low_quality flags and the QI weights of
+#  Module 3) change relative to v2.3; re-run Modules 2 and 3 together.
 #
 #  INPUT (config: GEE_DIR, QI_WEIGHTS, QI_LOW_THRESHOLD, S1_START_YEAR)
 #    land_cover_YEAR.tif    all available years
@@ -42,11 +54,20 @@ lc$files  <- lc$files[lc$years   %in% years]
 cf$files  <- cf$files[cf$years   %in% years]
 acc$files <- acc$files[acc$years %in% years]
 
+# v2.4: AOI = pixels valid (class > 0) in at least one year
+aoi_valid <- Reduce(`|`, lapply(lc$files, function(f)
+  as.vector(terra::values(terra::rast(f), dataframe = FALSE)) > 0))
+aoi_valid[is.na(aoi_valid)] <- FALSE
+message(.ts(), sprintf("  AOI: %d valid pixels (%.1f%% of raster)",
+                        sum(aoi_valid), mean(aoi_valid) * 100))
+
 qi_rows <- lapply(seq_along(years), function(i) {
   yr       <- years[i]
-  coverage <- mean(!is.na(terra::values(terra::rast(lc$files[i]), dataframe = FALSE)))
-  mean_conf <- mean(terra::values(terra::rast(cf$files[i]) / 100,
-                                  dataframe = FALSE), na.rm = TRUE)
+  lc_v     <- as.vector(terra::values(terra::rast(lc$files[i]), dataframe = FALSE))
+  valid    <- !is.na(lc_v) & lc_v > 0
+  coverage <- mean(valid[aoi_valid])
+  cf_v     <- as.vector(terra::values(terra::rast(cf$files[i]) / 100, dataframe = FALSE))
+  mean_conf <- mean(cf_v[valid & aoi_valid], na.rm = TRUE)
   acc_df   <- read.csv(acc$files[i], stringsAsFactors = FALSE)
   ba_row   <- acc_df[acc_df$final_code == -1, ]
   ba <- if (nrow(ba_row) > 0 && "balanced_accuracy" %in% names(ba_row))
@@ -56,16 +77,28 @@ qi_rows <- lapply(seq_along(years), function(i) {
 })
 qi_df <- dplyr::bind_rows(qi_rows)
 
-norm01 <- function(x) {
-  r <- range(x, na.rm = TRUE)
+# v2.4: years below MIN_COVERAGE are flagged `excluded` (Module 3 drops them).
+# Min-max ranges are computed on the analysed years only, so that a sparse year
+# (e.g. 1984) does not compress the scale of all the others; excluded years are
+# scored on that same scale and clamped to [0, 1] for display only.
+# coverage is already an absolute fraction in [0, 1]: it enters the QI as is.
+# (Min-max on a near-constant coverage would stretch tiny differences to 0-1.)
+qi_df$excluded <- qi_df$coverage < MIN_COVERAGE
+if (any(qi_df$excluded))
+  message(.ts(), sprintf("  Excluded (coverage < %.0f%%): %s", MIN_COVERAGE * 100,
+          paste(sprintf("%d (%.1f%%)", qi_df$year[qi_df$excluded],
+                        qi_df$coverage[qi_df$excluded] * 100), collapse = ", ")))
+norm01 <- function(x, ref = x) {
+  r <- range(ref, na.rm = TRUE)
   if (diff(r) == 0) return(rep(0.5, length(x)))
-  (x - r[1]) / diff(r)
+  pmin(1, pmax(0, (x - r[1]) / diff(r)))
 }
+ok <- !qi_df$excluded
 qi_df <- qi_df |>
   dplyr::mutate(
-    coverage_norm   = norm01(coverage),
-    confidence_norm = norm01(mean_confidence),
-    ba_norm         = norm01(balanced_accuracy),
+    coverage_norm   = coverage,
+    confidence_norm = norm01(mean_confidence,   mean_confidence[ok]),
+    ba_norm         = norm01(balanced_accuracy, balanced_accuracy[ok]),
     quality_index   = QI_WEIGHTS$coverage   * coverage_norm +
                       QI_WEIGHTS$confidence * confidence_norm +
                       QI_WEIGHTS$bal_acc    * ba_norm +

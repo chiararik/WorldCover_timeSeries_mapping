@@ -15,13 +15,13 @@
 # -----------------------------------------------------------------------------
 # 1. INPUT PATHS
 # -----------------------------------------------------------------------------
-GEE_DIR    <- "path/to/your/gee_outputs/"
+GEE_DIR    <- "put-your-local-path-here"
 LOOKUP_CSV <- file.path(GEE_DIR, "class_lookup_table.csv")
 
 # -----------------------------------------------------------------------------
 # 2. OUTPUT PATHS
 # -----------------------------------------------------------------------------
-OUTPUT_ROOT     <- "path/to/your/outputs/"
+OUTPUT_ROOT     <- "put-your-local-path-here/outputs/"
 OUT_CALIBRATION <- file.path(OUTPUT_ROOT, "01_calibration")
 OUT_QUALITY     <- file.path(OUTPUT_ROOT, "02_quality")
 OUT_CHANGE      <- file.path(OUTPUT_ROOT, "03_change")
@@ -46,6 +46,16 @@ QI_WEIGHTS <- list(
 )
 QI_LOW_THRESHOLD <- 0.5
 S1_START_YEAR    <- 2015
+
+# Minimum valid-pixel coverage (fraction of the AOI with class > 0) for a year to
+# be analysed. Years below it are EXCLUDED from Module 3 altogether: they are not
+# smoothed, not used as baseline/end point, and not part of the trend, transition
+# or reliability statistics. With a +-1 year smoothing window, a year that is
+# mostly NoData would be largely reconstructed from its neighbours, i.e. it would
+# not be an independent observation. The GEE script (wetland_classification.js)
+# documents 30% as the skip limit; 0.50 is used here (majority of the AOI actually
+# observed). Set to 0 to disable. Requires coverage from Module 2 (v2.4+).
+MIN_COVERAGE <- 0.50
 
 # -----------------------------------------------------------------------------
 # 5. MODULE 3 — LAND COVER CHANGE ANALYSIS
