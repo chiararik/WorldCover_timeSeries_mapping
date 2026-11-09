@@ -54,17 +54,17 @@
 // Re-run the script with a different value to process another year.
 // Note: years with very low dry-season cloud-free coverage (e.g. 1992–1997
 // in the Ibaji area) will be automatically skipped with a diagnostic message.
-var YEAR = 2018;
+var YEAR = 2018; //the desidered year
 
 // ── AOI ASSET ────────────────────────────────────────────────────────────────
 // GEE asset path of the study area polygon (FeatureCollection or Geometry).
 // Replace with your own asset path.
-var AOI_ASSET = 'projects/ee-chiararichiardi/assets/Kelafo_AOI';
+var AOI_ASSET = 'put-your-asset_ID-here';
 
 // ── OUTPUT GOOGLE DRIVE FOLDER ───────────────────────────────────────────────
 // Name of the Google Drive folder where all outputs will be saved.
 // The folder will be created automatically if it does not exist.
-var OUTPUT_FOLDER = 'Kelafo_Wetlands_training';
+var OUTPUT_FOLDER = 'Google-Drive-folder-name-of-your-choice';
 
 // ── DRY SEASON WINDOW ────────────────────────────────────────────────────────
 // Start: November 1 of YEAR   →   End: May 31 of YEAR+1.
