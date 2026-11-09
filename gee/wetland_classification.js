@@ -22,28 +22,31 @@
  *
  * OUTPUTS (per run)
  * - land_cover_YEAR.tif        : classified map (Int16, class codes)
- * - uncertainty_index_YEAR.tif : U = α·H + β·M  (Byte 0–100)
+ * - confidence_YEAR.tif        : max class probability x 100 (Byte)
  * - multiprob_YEAR.tif         : per-class probabilities (Byte 0–100)
  * - accuracy_YEAR.csv          : OA, Kappa, BA, PA, UA, F1 per class
  * - class_lookup_table.csv     : class code → class name mapping
  * - jm_distances.csv           : pairwise JM separability matrix
  *
  * OUTPUT CLASS CODES
- * Codes are assigned dynamically based on JM separability:
- *   10  Tree cover             20  Shrubland
- *   15  Woody vegetation       (10+20 merged if JM < threshold)
- *   30  Grassland              40  Cropland
- *   35  Grassland/Cropland     (30+40 merged if JM < threshold)
- *   55  Non-vegetated/Bare     (50+60 always merged)
- *   80  Permanent water bodies
- *   90  Herbaceous wetland     95  Mangroves
- * See class_lookup_table.csv for the schema used in each run.
+ * The class schema is DYNAMIC (MERGE_STRATEGY = 'dynamic'): which WorldCover
+ * classes are merged is decided at run time from the pairwise Jeffries-
+ * Matusita distances (complete linkage, < JM_THRESHOLD), restricted to
+ * ecologically compatible pairs (ECOLOGICAL_COMPATIBILITY), with focal
+ * classes never merged (PROTECTED_CLASSES) and rare classes absorbed
+ * (MIN_CLASS_FRACTION).
+ * Single classes keep their WorldCover code (10,20,30,40,50,60,80,90,95).
+ * A merged class takes the midpoint code of its members rounded to 5
+ * (10+20 -> 15, 30+40 -> 35, 50+60 -> 55).
+ * The schema actually used is written to class_lookup_table.csv
+ * (final_code, class_name, wc_members, merge_reason, wc_area_pct) and
+ * jm_distances.csv (with eco_compatible and merged flags).
  ************************************************************/
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║                     USER CONFIGURATION                      ║
-// ║  Edit ONLY this section before running the script.          ║
+// ║                     USER CONFIGURATION                       ║
+// ║  Edit ONLY this section before running the script.           ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 // ── YEAR TO PROCESS ──────────────────────────────────────────────────────────
@@ -51,17 +54,17 @@
 // Re-run the script with a different value to process another year.
 // Note: years with very low dry-season cloud-free coverage (e.g. 1992–1997
 // in the Ibaji area) will be automatically skipped with a diagnostic message.
-var YEAR = 2020;
+var YEAR = 2018;
 
 // ── AOI ASSET ────────────────────────────────────────────────────────────────
 // GEE asset path of the study area polygon (FeatureCollection or Geometry).
 // Replace with your own asset path.
-var AOI_ASSET = 'projects/ee-chiararichiardi/assets/WetlandNigeria/ibaji';
+var AOI_ASSET = 'projects/ee-chiararichiardi/assets/Kelafo_AOI';
 
 // ── OUTPUT GOOGLE DRIVE FOLDER ───────────────────────────────────────────────
 // Name of the Google Drive folder where all outputs will be saved.
 // The folder will be created automatically if it does not exist.
-var OUTPUT_FOLDER = 'Ibaji_Wetlands_DRY_MEDIAN';
+var OUTPUT_FOLDER = 'Kelafo_Wetlands_training';
 
 // ── DRY SEASON WINDOW ────────────────────────────────────────────────────────
 // Start: November 1 of YEAR   →   End: May 31 of YEAR+1.
@@ -92,6 +95,49 @@ var S1_MIN_YEAR        = 2015;    // first full year of S1 data (IW mode)
 // the class schema is identical throughout the time series.
 // Use the WorldCover 2020 reference year or any year with good coverage.
 var JM_YEAR = 2020;
+
+// ── CLASS SCHEMA: DYNAMIC (JM + ECOLOGY) ─────────────────────────────────────
+// Instead of fixed merge rules, the classes the RF is trained on are derived
+// at run time from (a) the WorldCover classes present in the AOI, (b) their
+// pairwise Jeffries-Matusita separability in JM_YEAR and (c) the ecological
+// rules below. See Section 9b for the algorithm.
+//
+//   'dynamic' : complete-linkage JM merging restricted to ecologically
+//               compatible classes + minimum-area rule  (default)
+//   'none'    : keep every WorldCover class present (no merging at all).
+//               Use it for outputs comparable with unmerged runs.
+var MERGE_STRATEGY = 'dynamic';
+//   'fixed'   : use FIXED_SCHEMA below, verbatim. Use it to FREEZE the schema
+//               chosen in the first run, so that every other year (and every
+//               R module downstream) is guaranteed the same classes and codes.
+
+// Frozen schema (used only if MERGE_STRATEGY = 'fixed'): WorldCover code ->
+// final code. The first dynamic run prints a ready-to-paste line
+// "FIXED_SCHEMA = {...}" in the Console: copy it here.
+var FIXED_SCHEMA = {};
+
+// Ecological compatibility: two WorldCover classes may be merged ONLY if some
+// group below contains both. JM then decides whether they actually are merged
+// (complete-linkage JM < JM_THRESHOLD). A group is a permission, not an order:
+// classes of a group that are spectrally separable stay separate.
+// Edit to match the ecology of the AOI (e.g. add a group [20, 30] for
+// savanna-like shrub/grass mosaics).
+var ECOLOGICAL_COMPATIBILITY = [
+  { name: 'Woody vegetation',     group: [10, 20] },   // trees + shrubs
+  { name: 'Grassland / Cropland', group: [30, 40] },   // herbaceous, often rotated/ploughed
+  { name: 'Non-vegetated / Bare', group: [50, 60] }    // built-up + bare: sealed vs. exposed soil
+];
+
+// Focal classes: never merged with anything, whatever their JM
+// (80 permanent water, 90 herbaceous wetland = the target of the study).
+var PROTECTED_CLASSES = [80, 90];
+
+// Minimum share of the AOI for a class to be kept on its own. Smaller classes
+// are absorbed into the nearest ecologically compatible class (protected
+// classes are kept and flagged). Rationale (ESTIMATE, not a standard):
+// with a target of a few hundred samples per class and a minimum floor of
+// 15 samples, a class under ~0.5% of the AOI is rarely sampled reliably.
+var MIN_CLASS_FRACTION = 0.005;
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║               ADVANCED CONFIGURATION                        ║
@@ -157,6 +203,11 @@ var config = {
   worldCoverBand        : 'Map',
   jmBands               : JM_BANDS,
   jmThreshold           : JM_THRESHOLD,
+  mergeStrategy         : MERGE_STRATEGY,
+  fixedSchema           : FIXED_SCHEMA,
+  ecologicalCompatibility: ECOLOGICAL_COMPATIBILITY,
+  protectedClasses      : PROTECTED_CLASSES,
+  minClassFraction      : MIN_CLASS_FRACTION,
   targetSamplesPerClass : TARGET_SAMPLES_PER_CLASS,
   trainFraction         : TRAIN_FRACTION,
   zThreshold            : Z_THRESHOLD,
@@ -656,6 +707,7 @@ var worldCover30m = worldCoverRaw
 // validateAndExport(), and all other functions that reference them.
 // They are assigned inside the async evaluate() callbacks below.
 var classValues       = [];
+var classCounts       = {};   // WorldCover code -> pixel count in AOI
 var nClasses          = 0;
 var finalClassValues  = [];
 var nFinalClasses     = 0;
@@ -754,8 +806,15 @@ function initializeWorkflow() {
     tileScale: 4
   }).evaluate(function(histResult) {
 
-    classValues = Object.keys((histResult && histResult['LC']) ? histResult['LC'] : {})
-      .map(Number).sort(function(a, b) { return a - b; });
+    // Histogram: { '10': pixelCount, '20': pixelCount, ... }.
+    // The counts are kept: the schema builder needs each class's share of the
+    // AOI (minimum-area rule). Keys are parsed one by one so that a key such as
+    // '10.0' would still map to code 10.
+    var hist = (histResult && histResult['LC']) ? histResult['LC'] : {};
+    classCounts = {};
+    Object.keys(hist).forEach(function(k) { classCounts[Number(k)] = hist[k]; });
+    classValues = Object.keys(classCounts).map(Number)
+      .sort(function(a, b) { return a - b; });
     nClasses = classValues.length;
 
     print('WorldCover classes present in AOI:',
@@ -767,9 +826,10 @@ function initializeWorkflow() {
     }
 
     // ── Build JM stack (original + squared bands) ─────────────────────────
-    // JM statistics computed on the year to be processed.
-    // JM statistics on the fixed reference year — NOT the year being classified.
-    // This ensures identical class schema across the entire time series.
+    // JM statistics are computed on the fixed reference year (JM_YEAR) — NOT
+    // on the year being classified. The class schema is therefore a function
+    // of (AOI, WorldCover 2020, JM_YEAR, JM_BANDS, thresholds) only, and is
+    // identical in every run of the time series.
     var jmStack       = buildFeatureStack(config.jmYear).select(config.jmBands);
     var jmBandsSq_    = config.jmBands.map(function(b) { return b + '_sq'; });
     var jmStackWithSq = jmStack.addBands(jmStack.pow(2).rename(jmBandsSq_));
@@ -787,11 +847,11 @@ function initializeWorkflow() {
     //   (e.g. {'NDVI': 0.42, 'NDVI_sq': 0.19, ...}) — documented GEE
     //   behaviour, consistent across all versions.
     //
-    //   8 non-blocking evaluate() calls do NOT trigger rate limits;
+    //   Non-blocking evaluate() calls do NOT trigger rate limits;
     //   they are queued by GEE and processed without blocking the JS thread.
     //
-    // Completion counter: all JM computations begin only after ALL 8
-    // per-class callbacks have returned (counter reaches nClasses).
+    // Completion counter: all JM computations begin only after ALL per-class
+    // callbacks have returned (counter reaches nClasses).
 
     print('Computing JM statistics — one async call per class...');
 
@@ -808,8 +868,20 @@ function initializeWorkflow() {
           tileScale: 4
         }).evaluate(function(statsDict, error) {
 
-          if (error) {
-            print('WARNING class', c, 'stats error:', error);
+          // A class whose statistics could not be computed (error, or no valid
+          // pixel in the JM_YEAR composite) must not take part in the schema:
+          // zero statistics would give JM ≈ 0 and trigger spurious merges in a
+          // data-driven schema. Such a class gets JM = 2 against every other
+          // class, i.e. it is never merged.
+          var allKeys_ = config.jmBands.concat(jmBandsSq_);
+          var valid_   = !error && !!statsDict && allKeys_.every(function(b) {
+            return statsDict[b] !== undefined && statsDict[b] !== null &&
+                   !isNaN(statsDict[b]);
+          });
+          if (!valid_) {
+            print('WARNING class', c, '(' + (wcClassNames[c]||c) + '): JM statistics',
+                  'unavailable', error ? ('(' + error + ')') : '(no valid pixels in the JM_YEAR composite)',
+                  '— the class will not be merged with any other.');
           }
 
           // Parse means directly from band-name keys.
@@ -831,12 +903,14 @@ function initializeWorkflow() {
             return Math.max(Math.max(sqMeans[i] - mu * mu, 0), 1e-10);
           });
 
-          classStats_[c] = { mean: origMeans, variance: variances };
+          classStats_[c] = { mean: origMeans, variance: variances, valid: valid_ };
 
           var ndviIdx = config.jmBands.indexOf('NDVI');
-          print('Class', c, '(' + (wcClassNames[c]||c) + ')',
-                'E[NDVI]=',   origMeans[ndviIdx].toFixed(4),
-                'Var[NDVI]=', variances[ndviIdx].toExponential(2));
+          if (ndviIdx !== -1) {
+            print('Class', c, '(' + (wcClassNames[c]||c) + ')',
+                  'E[NDVI]=',   origMeans[ndviIdx].toFixed(4),
+                  'Var[NDVI]=', variances[ndviIdx].toExponential(2));
+          }
 
           // When ALL classes have returned, proceed to JM computation.
           completedCount_++;
@@ -850,10 +924,298 @@ function initializeWorkflow() {
 }
 
 
+// ============================================================
+// 9b. DYNAMIC CLASS SCHEMA  (pure JavaScript — no ee calls)
+// ============================================================
+//
+// Turns "WorldCover classes present in the AOI" + "pairwise JM distances" into
+// the list of classes that the Random Forest is actually trained on.
+//
+//   WHICH classes may be merged   → ecological compatibility (user-defined
+//                                    permission groups) and protected classes
+//   WHETHER they should be merged → complete-linkage JM < JM_THRESHOLD
+//   WHETHER a class is trainable  → minimum share of the AOI
+//
+// Algorithm (agglomerative, complete linkage):
+//   1. Start with one cluster per WorldCover class.
+//   2. Repeatedly merge the pair of clusters with the smallest complete-linkage
+//      JM (largest member-to-member distance), provided that (a) EVERY cross
+//      pair of members is ecologically compatible and (b) that distance is
+//      < JM_THRESHOLD. Stop when no such pair is left.
+//      Complete linkage guarantees that no two members of a merged class are
+//      more separable than the threshold, i.e. the merge never hides a pair
+//      that the data say can be told apart.
+//   3. Clusters smaller than MIN_CLASS_FRACTION of the AOI are absorbed into
+//      their nearest ecologically compatible cluster (even if JM ≥ threshold:
+//      a class that cannot be sampled cannot be mapped anyway). Protected
+//      classes, or classes with no compatible partner, are kept and flagged.
+//
+// Limits to keep in mind:
+//   • JM of a merged cluster against a third class is approximated by the
+//     largest pairwise JM of the original classes (no statistics are pooled).
+//   • JM uses a diagonal covariance (see jeffriesMatusita()); with strongly
+//     correlated bands (NDVI/EVI2/SAVI, MNDWI/NDWI/NDPI...) it is inflated and
+//     saturates near 2, so JM_THRESHOLD is not the textbook 1.8 rule — treat
+//     decisions with a small margin to the threshold as fragile.
+//
+// <<SCHEMA_BUILDER_BEGIN>>
+/**
+ * @param {number[]} codes   WorldCover codes present in the AOI
+ * @param {Object}   counts  code -> pixel count in the WorldCover label map
+ * @param {function} jm      (codeA, codeB) -> Jeffries-Matusita distance [0,2]
+ * @param {Object}   opt     { strategy, fixedMap, threshold, compat, protectedCodes,
+ *                             minFraction, names }
+ * @returns {{ clusters: Object[], log: string[], compatible: function }}
+ *          cluster = { members, code, name, fraction, reason, cl, note }
+ */
+function buildClassSchema_(codes, counts, jm, opt) {
+
+  var log   = [];
+  var byNum = function(a, b) { return a - b; };
+
+  var total = 0;
+  codes.forEach(function(c) { total += (counts[c] || 0); });
+
+  function fracOf(members) {
+    var s = 0;
+    members.forEach(function(c) { s += (counts[c] || 0); });
+    return total > 0 ? s / total : 0;
+  }
+  function label(c)       { return 'WC-' + c + ' ' + (opt.names[c] || '?'); }
+  function labelAll(ms)   { return ms.map(label).join(' + '); }
+  function pct(x)         { return (100 * x).toFixed(2) + '%'; }
+
+  var protectedSet = {};
+  opt.protectedCodes.forEach(function(c) { protectedSet[c] = true; });
+
+  // Two classes are ecologically compatible if neither is protected and at
+  // least one compatibility group contains both.
+  function compatible(a, b) {
+    if (a === b) return true;
+    if (protectedSet[a] || protectedSet[b]) return false;
+    return opt.compat.some(function(r) {
+      return r.group.indexOf(a) !== -1 && r.group.indexOf(b) !== -1;
+    });
+  }
+
+  // Link between two clusters: ok = every cross pair is compatible,
+  // cl = complete-linkage JM = largest cross-pair distance.
+  function link(A, B) {
+    var ok = true, cl = 0;
+    for (var i = 0; i < A.length; i++) {
+      for (var j = 0; j < B.length; j++) {
+        if (!compatible(A[i], B[j])) ok = false;
+        var d = jm(A[i], B[j]);
+        if (d > cl) cl = d;
+      }
+    }
+    return { ok: ok, cl: cl };
+  }
+  function diameter(members) {
+    var d = 0;
+    for (var i = 0; i < members.length; i++)
+      for (var j = i + 1; j < members.length; j++)
+        d = Math.max(d, jm(members[i], members[j]));
+    return d;
+  }
+  function joinReasons() {
+    var set = {};
+    for (var i = 0; i < arguments.length; i++)
+      if (arguments[i] && arguments[i] !== 'kept') set[arguments[i]] = true;
+    var keys = Object.keys(set);
+    return keys.length ? keys.join('+') : 'kept';
+  }
+
+  var clusters = codes.slice().sort(byNum).map(function(c) {
+    return { members: [c], reason: 'kept', cl: null, note: '' };
+  });
+
+  log.push('AOI composition (WorldCover 2020 label map, 30 m):');
+  codes.forEach(function(c) { log.push('  ' + label(c) + ': ' + pct(fracOf([c]))); });
+
+  if (opt.strategy === 'fixed') {
+
+    // ── strategy 'fixed': schema frozen by the user ──────────────────────────
+    var fm = opt.fixedMap || {}, groups = {}, unmapped = [];
+    codes.slice().sort(byNum).forEach(function(c) {
+      if (fm[c] === undefined) { unmapped.push(c); return; }
+      (groups[fm[c]] = groups[fm[c]] || []).push(c);
+    });
+    unmapped.forEach(function(c) {
+      log.push('WARN  ' + label(c) + ' is present in the AOI but missing from FIXED_SCHEMA: ' +
+               'kept as its own class (code ' + c + '). The schema differs from the frozen one — ' +
+               'update FIXED_SCHEMA and rerun ALL years.');
+      if (groups[c] !== undefined) {
+        throw new Error('FIXED_SCHEMA code collision: ' + c + ' is both a WorldCover code and ' +
+                        'a target code of a merged class.');
+      }
+      groups[c] = [c];
+    });
+    clusters = Object.keys(groups).map(Number).sort(byNum).map(function(f) {
+      return { members: groups[f], reason: groups[f].length > 1 ? 'fixed-schema' : 'kept',
+               cl: null, note: 'frozen by FIXED_SCHEMA', fixedCode: f };
+    });
+    var absent = Object.keys(fm).map(Number).filter(function(c) { return codes.indexOf(c) === -1; });
+    if (absent.length) {
+      log.push('INFO  FIXED_SCHEMA lists classes not present in this AOI (ignored): ' + absent.join(', '));
+    }
+    log.push('MERGE_STRATEGY = fixed — schema taken from FIXED_SCHEMA (JM is still computed for jm_distances.csv, but does not influence the classes).');
+
+  } else if (opt.strategy !== 'dynamic') {
+
+    // ── strategy 'none': keep everything, only warn about rare classes ─────
+    log.push('MERGE_STRATEGY = ' + opt.strategy + ' — every WorldCover class is kept as is.');
+    if (total > 0 && opt.minFraction > 0) {
+      clusters.forEach(function(cl) {
+        if (fracOf(cl.members) < opt.minFraction) {
+          log.push('WARN  ' + label(cl.members[0]) + ' covers only ' + pct(fracOf(cl.members)) +
+                   ' of the AOI (< ' + pct(opt.minFraction) + '): it may not collect enough ' +
+                   'training samples and could be dropped from the RF.');
+        }
+      });
+    }
+
+  } else {
+
+    // ── 1. JM + ecology driven merging (complete linkage) ──────────────────
+    for (;;) {
+      var best = null;
+      for (var i = 0; i < clusters.length; i++) {
+        for (var j = i + 1; j < clusters.length; j++) {
+          var L = link(clusters[i].members, clusters[j].members);
+          if (L.ok && L.cl < opt.threshold && (best === null || L.cl < best.cl)) {
+            best = { i: i, j: j, cl: L.cl };
+          }
+        }
+      }
+      if (best === null) break;
+      var cA = clusters[best.i], cB = clusters[best.j];
+      log.push('MERGE  {' + labelAll(cA.members) + '} + {' + labelAll(cB.members) +
+               '}  complete-linkage JM=' + best.cl.toFixed(4) + ' < ' + opt.threshold +
+               ' and ecologically compatible');
+      cA.members = cA.members.concat(cB.members).sort(byNum);
+      cA.reason  = joinReasons(cA.reason, cB.reason, 'JM+ecology');
+      clusters.splice(best.j, 1);
+    }
+
+    // ── 2. Minimum-area rule ───────────────────────────────────────────────
+    if (total > 0 && opt.minFraction > 0) {
+      var warned = {};
+      for (;;) {
+        var rare = clusters.filter(function(cl) {
+          return fracOf(cl.members) < opt.minFraction;
+        }).sort(function(a, b) { return fracOf(a.members) - fracOf(b.members); });
+
+        var acted = false;
+        for (var r = 0; r < rare.length && !acted; r++) {
+          var R = rare[r], pick = null;
+          for (var k = 0; k < clusters.length; k++) {
+            if (clusters[k] === R) continue;
+            var L2 = link(R.members, clusters[k].members);
+            if (L2.ok && (pick === null || L2.cl < pick.cl)) pick = { O: clusters[k], cl: L2.cl };
+          }
+          if (pick === null) {
+            var wkey = R.members.join('+');
+            if (!warned[wkey]) {
+              warned[wkey] = true;
+              log.push('WARN  {' + labelAll(R.members) + '} covers only ' + pct(fracOf(R.members)) +
+                       ' of the AOI (< ' + pct(opt.minFraction) + ') and cannot be absorbed ' +
+                       '(protected, or no ecologically compatible class in the AOI). It is kept, ' +
+                       'but may not collect enough training samples: check the "classes in training ' +
+                       'set" printout and consider stratified sampling.');
+            }
+            continue;
+          }
+          log.push('ABSORB {' + labelAll(R.members) + '} (' + pct(fracOf(R.members)) +
+                   ' of the AOI < ' + pct(opt.minFraction) + ') into {' + labelAll(pick.O.members) +
+                   '}  complete-linkage JM=' + pick.cl.toFixed(4) +
+                   (pick.cl >= opt.threshold
+                     ? '  (≥ threshold: absorbed for trainability, not for spectral similarity)'
+                     : ''));
+          pick.O.members = pick.O.members.concat(R.members).sort(byNum);
+          pick.O.reason  = joinReasons(pick.O.reason, R.reason, 'rare-absorbed');
+          clusters.splice(clusters.indexOf(R), 1);
+          acted = true;
+        }
+        if (!acted) break;
+      }
+    }
+
+    // ── 3. Explain every class that stayed on its own ──────────────────────
+    clusters.forEach(function(cl) {
+      if (cl.members.length > 1) {
+        cl.cl   = diameter(cl.members);
+        cl.note = 'largest JM among members = ' + cl.cl.toFixed(4);
+        return;
+      }
+      var c0 = cl.members[0];
+      if (protectedSet[c0]) {
+        cl.note = 'protected class (never merged)';
+      } else {
+        var near = null;
+        clusters.forEach(function(O) {
+          if (O === cl) return;
+          var L3 = link(cl.members, O.members);
+          if (L3.ok && (near === null || L3.cl < near.cl)) near = { O: O, cl: L3.cl };
+        });
+        cl.note = near
+          ? 'nearest compatible class {' + labelAll(near.O.members) + '} has JM=' +
+            near.cl.toFixed(4) + ' ≥ ' + opt.threshold + ' (separable)'
+          : 'no ecologically compatible class present in the AOI';
+      }
+      log.push('KEEP   ' + label(c0) + ': ' + cl.note);
+    });
+  }
+
+  // ── Final codes and names ────────────────────────────────────────────────
+  // Single-class clusters keep their WorldCover code. A merged cluster takes
+  // the midpoint of its members rounded to 5 (10+20 → 15, 30+40 → 35, 50+60 → 55),
+  // unless that code belongs to another cluster; then the lowest member code.
+  var owner = {};
+  clusters.forEach(function(cl, idx) {
+    cl.members.forEach(function(m) { owner[m] = idx; });
+  });
+  var assigned = {};
+  clusters.forEach(function(cl) {
+    if (cl.fixedCode !== undefined) { cl.code = cl.fixedCode; assigned[cl.code] = true; }
+    else if (cl.members.length === 1) { cl.code = cl.members[0]; assigned[cl.code] = true; }
+  });
+  clusters.forEach(function(cl, idx) {
+    if (cl.members.length === 1 || cl.fixedCode !== undefined) return;
+    var sum = 0;
+    cl.members.forEach(function(m) { sum += m; });
+    var cand = Math.round(sum / cl.members.length / 5) * 5;
+    var free = !assigned[cand] && (owner[cand] === undefined || owner[cand] === idx);
+    cl.code = free ? cand : Math.min.apply(null, cl.members);
+    assigned[cl.code] = true;
+  });
+
+  function nameOf(members) {
+    if (members.length === 1) return opt.names[members[0]] || ('WC-' + members[0]);
+    var key = members.join('+');
+    for (var g = 0; g < opt.compat.length; g++) {
+      var present = opt.compat[g].group.filter(function(c) { return codes.indexOf(c) !== -1; })
+                                       .sort(byNum);
+      if (opt.compat[g].name && present.join('+') === key) return opt.compat[g].name;
+    }
+    return members.map(function(m) { return opt.names[m] || ('WC-' + m); }).join(' / ');
+  }
+  clusters.forEach(function(cl) {
+    cl.name     = nameOf(cl.members);
+    cl.fraction = fracOf(cl.members);
+  });
+  clusters.sort(function(a, b) { return a.code - b.code; });
+
+  return { clusters: clusters, log: log, compatible: compatible };
+}
+// <<SCHEMA_BUILDER_END>>
+
+
 /**
  * Called once all per-class statistics are ready.
- * Computes pairwise JM distances, applies merge rules, populates
- * module-scope variables, exports lookup tables, and launches runWorkflow().
+ * Computes pairwise JM distances, derives the class schema (Section 9b),
+ * populates module-scope variables, exports lookup tables, and launches
+ * runWorkflow().
  *
  * Defined at module scope so it is accessible from the evaluate() callback.
  * Trailing underscore in name avoids potential shadowing conflicts.
@@ -865,78 +1227,80 @@ function computeJMAndRun_(classStats_, jmBandsSq_) {
   classValues.forEach(function(ci) {
     classValues.forEach(function(cj) {
       if (cj <= ci) return;
-      var jm = jeffriesMatusita(classStats_[ci] || { mean:[], variance:[] },
-                                classStats_[cj] || { mean:[], variance:[] });
+      var si = classStats_[ci], sj = classStats_[cj];
+      // Unknown statistics → treated as fully separable (JM = 2): never merged.
+      var jm = (si && sj && si.valid && sj.valid) ? jeffriesMatusita(si, sj) : 2.0;
       jmMatrix[ci + '_' + cj] = jm;
       print('JM(' + (wcClassNames[ci]||ci) + ', ' + (wcClassNames[cj]||cj) + ') =',
             jm.toFixed(4), jm < config.jmThreshold ? '  *** BELOW THRESHOLD' : '');
     });
   });
 
-  // ── Merge rules ─────────────────────────────────────────────────────────
-  var mergeRules = [
-    { from: [50, 60], to: 55, name: 'Non-vegetated / Bare',  condition: 'always' },
-    { from: [30, 40], to: 35, name: 'Grassland / Cropland',  condition: 'if_jm', pair: '30_40' },
-    { from: [10, 20], to: 15, name: 'Woody vegetation',      condition: 'if_jm', pair: '10_20' }
-  ];
+  function jmDist_(a, b) {
+    var v = jmMatrix[Math.min(a, b) + '_' + Math.max(a, b)];
+    return (v !== undefined) ? v : 2.0;
+  }
 
-  var mergeMap = {};
-  classValues.forEach(function(c) { mergeMap[c] = c; });
-
-  mergeRules.forEach(function(rule) {
-    var doMerge = false;
-    if (rule.condition === 'always') {
-      doMerge = rule.from.every(function(c) { return classValues.indexOf(c) !== -1; });
-    } else if (rule.condition === 'if_jm') {
-      var present = rule.from.every(function(c) { return classValues.indexOf(c) !== -1; });
-      var jmVal   = jmMatrix[rule.pair];
-      doMerge = present && (jmVal !== undefined) && (jmVal < config.jmThreshold);
-    }
-    if (doMerge) {
-      rule.from.forEach(function(c) { mergeMap[c] = rule.to; });
-      // Bug fix: use !== undefined instead of || to avoid treating JM=0 as falsy.
-      var jmLabel = (rule.condition === 'if_jm')
-        ? ' [JM=' + (jmMatrix[rule.pair] !== undefined
-                     ? jmMatrix[rule.pair].toFixed(4) : '?') + ']'
-        : ' [always]';
-      print('MERGE: WC [' + rule.from.join(', ') + '] -> code ' + rule.to +
-            ' (' + rule.name + ')' + jmLabel);
-    }
+  // ── Derive the class schema from data + ecological rules ────────────────
+  var schema = buildClassSchema_(classValues, classCounts, jmDist_, {
+    strategy      : config.mergeStrategy,
+    fixedMap      : config.fixedSchema,
+    threshold     : config.jmThreshold,
+    compat        : config.ecologicalCompatibility,
+    protectedCodes: config.protectedClasses,
+    minFraction   : config.minClassFraction,
+    names         : wcClassNames
   });
+  schema.log.forEach(function(line) { print(line); });
 
   // ── Populate module-scope variables ─────────────────────────────────────
-  classValues.forEach(function(c) {
-    finalClassNamesMap[mergeMap[c]] = wcClassNames[c] || ('WC-' + c);
-  });
-  mergeRules.forEach(function(rule) {
-    if (mergeMap[rule.from[0]] === rule.to) finalClassNamesMap[rule.to] = rule.name;
-  });
-
-  var seen = {};
-  classValues.forEach(function(c) {
-    var fc = mergeMap[c];
-    if (!seen[fc]) { seen[fc] = true; finalClassValues.push(fc); }
+  var mergeMap        = {};   // WorldCover code -> final code
+  var clusterInfo_    = {};   // final code -> cluster
+  finalClassValues    = [];
+  finalClassNamesMap  = {};
+  schema.clusters.forEach(function(cl) {
+    finalClassValues.push(cl.code);
+    finalClassNamesMap[cl.code] = cl.name;
+    clusterInfo_[cl.code]       = cl;
+    cl.members.forEach(function(m) { mergeMap[m] = cl.code; });
   });
   finalClassValues.sort(function(a, b) { return a - b; });
   nFinalClasses = finalClassValues.length;
 
-  print('Final class schema (' + nFinalClasses + ' classes):');
+  print('Final class schema (' + nFinalClasses + ' classes, strategy = ' +
+        config.mergeStrategy + '):');
   finalClassValues.forEach(function(c) {
-    print('  code', c, '->', finalClassNamesMap[c]);
+    var cl = clusterInfo_[c];
+    print('  code', c, '->', finalClassNamesMap[c],
+          '| WC members:', cl.members.join('+'),
+          '|', (100 * cl.fraction).toFixed(2) + '% of AOI',
+          '|', cl.reason);
   });
+
+  // Paste-ready line to freeze this schema (MERGE_STRATEGY = 'fixed').
+  print('FIXED_SCHEMA = ' + JSON.stringify(mergeMap) + ';');
 
   var fromCodes = classValues;
   var toCodes   = classValues.map(function(c) { return mergeMap[c]; });
   labelMapMerged = worldCover30m.remap(fromCodes, toCodes).rename('LC').toInt();
 
   // ── Export lookup table and JM distances ─────────────────────────────────
+  // wc_area_pct = share of the AOI in the WorldCover label map (not of the
+  // valid pixels of any given year).
   Export.table.toDrive({
     collection    : ee.FeatureCollection(finalClassValues.map(function(c) {
-      return ee.Feature(null, { final_code: c, class_name: finalClassNamesMap[c] });
+      var cl = clusterInfo_[c];
+      return ee.Feature(null, {
+        final_code  : c,
+        class_name  : finalClassNamesMap[c],
+        wc_members  : cl.members.join('+'),
+        merge_reason: cl.reason,
+        wc_area_pct : Math.round(cl.fraction * 10000) / 100
+      });
     })),
     description   : 'class_lookup_table', folder: config.outputDriveFolder,
     fileNamePrefix: 'class_lookup_table', fileFormat: 'CSV',
-    selectors     : ['final_code','class_name']
+    selectors     : ['final_code','class_name','wc_members','merge_reason','wc_area_pct']
   });
 
   var jmFeatures = [];
@@ -948,8 +1312,9 @@ function computeJMAndRun_(classStats_, jmBandsSq_) {
         class_i: ci, class_j: cj,
         name_i : wcClassNames[ci]||('WC-'+ci),
         name_j : wcClassNames[cj]||('WC-'+cj),
-        jm_distance: jmMatrix[key] !== undefined ? jmMatrix[key] : -1,
-        merged : (mergeMap[ci] === mergeMap[cj] && ci !== cj) ? 1 : 0
+        jm_distance   : jmMatrix[key] !== undefined ? jmMatrix[key] : -1,
+        eco_compatible: schema.compatible(ci, cj) ? 1 : 0,
+        merged : (mergeMap[ci] === mergeMap[cj]) ? 1 : 0
       }));
     });
   });
@@ -958,7 +1323,8 @@ function computeJMAndRun_(classStats_, jmBandsSq_) {
       collection    : ee.FeatureCollection(jmFeatures),
       description   : 'jm_distances', folder: config.outputDriveFolder,
       fileNamePrefix: 'jm_distances', fileFormat: 'CSV',
-      selectors     : ['class_i','name_i','class_j','name_j','jm_distance','merged']
+      selectors     : ['class_i','name_i','class_j','name_j','jm_distance',
+                       'eco_compatible','merged']
     });
   }
   print('Lookup table and JM distance matrix exports scheduled.');
@@ -1053,8 +1419,6 @@ function balancedSample(cleanSamples, classProperty, classValueList, seed) {
 // computation graph (iterate over all classes x all bands). Per-class
 // exclusions are handled server-side by balancedSample(). Accuracy
 // metrics exported in the CSV fully document per-class performance.
-  });
-}
 
 
 // ============================================================
@@ -1316,37 +1680,59 @@ function processYear(year, isReference) {
 
   // ── MULTIPROBABILITY: per-class probability image ───────────────────────────
   //
-  // smileRandomForest MULTIPROBABILITY returns an array-type image — a single
-  // band containing a 1-D array of length n_trained_classes per pixel.
-  // Direct export fails with "Cannot export array bands" (Error code 3).
+  // smileRandomForest MULTIPROBABILITY returns an array-type image whose length
+  // equals the number of classes ACTUALLY PRESENT in the training set — not
+  // nFinalClasses. A class can be absent from training (fewer than
+  // minSamplesPerClass valid samples after outlier removal; typical of small
+  // classes, which is why the schema has a minimum-area rule but cannot rule
+  // it out). A fixed-label arrayFlatten() then fails with
+  // "Input array has length N on axis 0, but M labels provided" (Error code 3).
   //
-  // FIX: arrayFlatten() converts the array image to a regular N-band float image
-  // (one named float band per class). This is the correct GEE approach.
+  // FIX: read each final class by its position in the sorted list of trained
+  // classes with arrayGet(position); a class that was not trained gets a
+  // constant 0 band. Every year therefore exports exactly nFinalClasses bands,
+  // in the same order, so the time series stays consistent.
   //
-  // NOTE: the uncertainty index (H, M, U) has been removed from GEE outputs.
+  // ASSUMPTION (to verify once, e.g. in R on validation_points_YEAR.csv): the
+  // array follows ascending class code, i.e. the order of trainedClasses. Check:
+  // the prob_* column with the highest value must belong to the class in
+  // `predicted`.
   //
-  // WHY: U collapses to a narrow range (~0.33-0.39 in all tested years)
-  // because raw RF probabilities are systematically under-dispersed —
-  // a well-documented RF calibration issue (Niculescu-Mizil & Caruana 2005).
-  // The RF tends to predict probabilities near the class proportion (1/n)
-  // rather than near 0 or 1, making the entropy distribution nearly uniform.
-  // The resulting U raster is spatially uninformative: almost every pixel
-  // gets the same value (approximately = global OA).
-  //
-  // SOLUTION: calibrate RF probabilities using isotonic regression in R
-  // post-processing (using validation_points_YEAR.csv). Calibrated probabilities
-  // are better dispersed and produce a spatially meaningful confidence map.
+  // NOTE: raw RF probabilities are systematically under-dispersed
+  // (Niculescu-Mizil & Caruana 2005). Calibrate them with isotonic regression
+  // in R post-processing (validation_points_YEAR.csv); the raw ones are
+  // exported here for that purpose.
 
   var multiProbBandNames = finalClassValues.map(function(c) {
     return 'prob_' + (finalClassNamesMap[c] || ('code' + c))
       .replace(/[\/\s]+/g, '_');
   });
 
-  var multiProbMap = featureStack
+  // Classes present in the training set (ascending). Printed so that a class
+  // dropped for lack of samples is visible immediately.
+  var trainedClasses = trainSmp.aggregate_array('LC').distinct().sort();
+  print('Year', year,
+        '| schema classes:', finalClassValues,
+        '| classes in training set:', trainedClasses);
+
+  var multiProbArray = featureStack
     .classify(classifier.setOutputMode('MULTIPROBABILITY'))
     .updateMask(bapMask)
-    .clip(aoi)
-    .arrayFlatten([multiProbBandNames]);   // array → named float bands
+    .clip(aoi);
+
+  var multiProbBandImages = finalClassValues.map(function(c, i) {
+    var bandName = multiProbBandNames[i];
+    var classNum = ee.Number(c);
+    return ee.Image(ee.Algorithms.If(
+      trainedClasses.contains(classNum),
+      multiProbArray.arrayGet(trainedClasses.indexOf(classNum)).rename(bandName),
+      ee.Image.constant(0).updateMask(bapMask).clip(aoi).rename(bandName)
+    ));
+  });
+
+  var multiProbMap = multiProbBandImages.slice(1).reduce(function(acc, img) {
+    return acc.addBands(img);
+  }, multiProbBandImages[0]);
 
   // Confidence = max class probability (winning-class probability).
   // Before isotonic calibration this is still useful as a coarse spatial
@@ -1354,45 +1740,6 @@ function processYear(year, isReference) {
   var confidenceMap = multiProbMap.reduce(ee.Reducer.max())
     .multiply(100).toByte().rename('confidence')
     .updateMask(bapMask).clip(aoi);
-
-  // ── Balanced sampling → 70/30 split ─────────────────────────────────────
-  //
-  // Balance first, then split. The validation set is therefore also
-  // class-balanced (~30 per class), which matches the training distribution
-  // and is required for the isotonic calibration to work correctly.
-  // (An unbalanced validation set causes per-class calibration to collapse
-  // when class prevalence is low — all calibrated probabilities → 0.)
-  //
-  // Limitation: OA on a balanced val set does not represent landscape-level
-  // accuracy (rare classes are over-weighted). This is a known trade-off.
-  // For publication, complement with an area-weighted OA computed in R
-  // from the class frequency histogram and per-class PA values.
-
-  var balanced = balancedSample(cleanSamples, 'LC', finalClassValues, year);
-  var split    = splitTrainVal(balanced, year);
-  var trainSmp = split.train;
-  var valSmp   = split.val;
-
-
-  var classifier = ee.Classifier.smileRandomForest({
-    numberOfTrees    : config.rfParams.numberOfTrees,
-    variablesPerSplit: config.rfParams.variablesPerSplit,
-    minLeafPopulation: config.rfParams.minLeafPopulation,
-    bagFraction      : config.rfParams.bagFraction,
-    maxNodes         : config.rfParams.maxNodes,
-    seed             : config.rfParams.seed
-  }).train({
-    features       : trainSmp,
-    classProperty  : 'LC',
-    inputProperties: featureBands
-  });
-
-  // Classification — original WorldCover codes as pixel values (Int16).
-  // bapMask prevents SLC-off / no-data pixels from being classified.
-  var classified = featureStack
-    .classify(classifier.setOutputMode('CLASSIFICATION'))
-    .updateMask(bapMask)
-    .rename('land_cover').clip(aoi).set('year', year);
 
   // ── Exports ──────────────────────────────────────────────────────────────
   //
@@ -1487,7 +1834,20 @@ function processYear(year, isReference) {
       { code: 80, color: '#2c7bb6', label: 'Perm. water' },
       { code: 90, color: '#abd9e9', label: 'Herb. wetland' },
       { code: 95, color: '#006837', label: 'Mangroves' },
-    ].filter(function(e) { return finalClassValues.indexOf(e.code) !== -1; });
+      { code: 50, color: '#d7191c', label: 'Built-up' },
+      { code: 60, color: '#e8c9a0', label: 'Bare / sparse vegetation' },
+      { code: 70, color: '#ffffff', label: 'Snow and ice' },
+      { code: 100, color: '#cccccc', label: 'Moss and lichen' },
+    ];
+    // Codes produced by a dynamic schema that have no predefined colour
+    // (e.g. an unusual merge such as 20+30 -> 25) get a neutral grey.
+    finalClassValues.forEach(function(c) {
+      if (!sldEntries.some(function(e) { return e.code === c; })) {
+        sldEntries.push({ code: c, color: '#999999', label: finalClassNamesMap[c] || ('class ' + c) });
+      }
+    });
+    sldEntries = sldEntries.filter(function(e) { return finalClassValues.indexOf(e.code) !== -1; })
+      .sort(function(a, b) { return a.code - b.code; });
 
     var sld = '<RasterSymbolizer><ColorMap type="values">' +
       sldEntries.map(function(e) {
@@ -1513,10 +1873,10 @@ function processYear(year, isReference) {
 // ============================================================
 
 function runWorkflow() {
-  print('=== Nigeria Wetlands Annual Classification — v4 ===');
+  print('=== Wetlands Annual Classification — v4 ===');
   print('Composite method   : dry-season median of per-scene spectral indices (Nov-May)');
   print('Label source       : ESA WorldCover 2020 (majority-resampled to 30 m)');
-  print('Class schema       : merged via JM separability + ecological rules (fixed)');
+  print('Class schema       : dynamic (JM + ecological compatibility), strategy =', config.mergeStrategy);
   print('Output values      : final merged class codes (see class_lookup_table.csv)');
   print('Uncertainty        : U = alpha*H + beta*M (entropy + margin)');
   print('Local accuracy     : post-processing in R/Python');
